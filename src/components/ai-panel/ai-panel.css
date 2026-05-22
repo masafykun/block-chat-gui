@@ -32,6 +32,14 @@
     color: #ffffff;
 }
 
+.source-link {
+    margin-left: auto;
+    font-size: 0.68rem;
+    color: #ffffff;
+    text-decoration: underline;
+    opacity: 0.8;
+}
+
 .title {
     font-weight: bold;
     font-size: 0.85rem;

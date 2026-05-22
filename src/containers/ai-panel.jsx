@@ -6,10 +6,11 @@ import VM from 'scratch-vm';
 
 import AIPanelComponent from '../components/ai-panel/ai-panel.jsx';
 import injectBlocks from '../lib/ai-block-injector';
+import collectExistingScripts from '../lib/ai-project-context';
 
-// バックエンドのURL。window.BLOCK_CHAT_BACKEND で上書き可（再ビルド不要）。
-const BACKEND_URL = (typeof window !== 'undefined' && window.BLOCK_CHAT_BACKEND) ||
-    'http://localhost:8000';
+// バックエンドのURL。既定は空＝相対パス（同一オリジンの /api を nginx がプロキシ）。
+// window.BLOCK_CHAT_BACKEND で上書き可（再ビルド不要）。
+const BACKEND_URL = (typeof window !== 'undefined' && window.BLOCK_CHAT_BACKEND) || '';
 
 const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 540;
@@ -23,7 +24,6 @@ class AIPanel extends React.Component {
         super(props);
         bindAll(this, [
             'handleInputChange',
-            'handleInputKeyDown',
             'handleSend',
             'handleResizeMouseDown',
             'handleResizeMouseMove',
@@ -60,12 +60,6 @@ class AIPanel extends React.Component {
     handleInputChange (e) {
         this.setState({inputValue: e.target.value});
     }
-    handleInputKeyDown (e) {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            this.handleSend();
-        }
-    }
     handleSend () {
         const text = this.state.inputValue.trim();
         if (!text || this.state.isLoading) return;
@@ -77,19 +71,34 @@ class AIPanel extends React.Component {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
-                messages: history.map(m => ({role: m.role, content: m.content}))
+                messages: history.map(m => ({role: m.role, content: m.content})),
+                existing_scripts: collectExistingScripts(this.props.vm)
             })
         })
-            .then(res => res.json())
-            .then(data => {
+            .then(res => res.json().then(data => ({ok: res.ok, data})))
+            .then(({ok, data}) => {
                 this.setState({isLoading: false});
+                if (!ok) {
+                    // レート制限(429)など。バックエンドの detail をそのまま見せる。
+                    this.appendAssistant(data.detail || 'エラーが起きました。少し待ってから試してね。');
+                    return;
+                }
                 this.appendAssistant(data.reply || '(返事がありませんでした)');
                 if (data.errors && data.errors.length > 0) {
                     this.appendAssistant(`うまく作れませんでした: ${data.errors.join(', ')}`);
                     return;
                 }
-                if (data.blocks && Object.keys(data.blocks).length > 0) {
+                const hasWork = (data.blocks && Object.keys(data.blocks).length > 0) ||
+                    (data.sprites && data.sprites.length > 0) ||
+                    data.backdrop ||
+                    (data.deletes && data.deletes.length > 0);
+                if (hasWork) {
                     injectBlocks(this.props.vm, data)
+                        .then(res => {
+                            if (res && res.notes) {
+                                res.notes.forEach(n => this.appendAssistant(`⚠️ ${n}`));
+                            }
+                        })
                         .catch(err => this.appendAssistant(`注入に失敗しました: ${err.message}`));
                 }
             })
@@ -130,7 +139,6 @@ class AIPanel extends React.Component {
                 messages={this.state.messages}
                 messagesRef={this.setMessagesRef}
                 onInputChange={this.handleInputChange}
-                onInputKeyDown={this.handleInputKeyDown}
                 onResizeMouseDown={this.handleResizeMouseDown}
                 onSend={this.handleSend}
             />

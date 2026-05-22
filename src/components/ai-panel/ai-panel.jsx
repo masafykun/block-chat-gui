@@ -15,7 +15,6 @@ const AIPanelComponent = props => {
         height,
         messagesRef,
         onInputChange,
-        onInputKeyDown,
         onSend,
         onResizeMouseDown
     } = props;
@@ -32,6 +31,14 @@ const AIPanelComponent = props => {
             <div className={styles.header}>
                 <span className={styles.title}>{'🤖 AIチャット'}</span>
                 <span className={styles.hint}>{'作りたいことを話しかけてね'}</span>
+                <a
+                    className={styles.sourceLink}
+                    href="https://github.com/masafykun/block-chat-gui"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                >
+                    {'ソース(AGPL)'}
+                </a>
             </div>
             <div
                 className={styles.messages}
@@ -59,11 +66,10 @@ const AIPanelComponent = props => {
                 <input
                     className={styles.input}
                     type="text"
-                    placeholder="作りたいことを書いて Enter"
+                    placeholder="作りたいことを書いて「送信」"
                     value={inputValue}
                     disabled={isLoading}
                     onChange={onInputChange}
-                    onKeyDown={onInputKeyDown}
                 />
                 <button
                     className={styles.sendButton}
@@ -87,7 +93,6 @@ AIPanelComponent.propTypes = {
     height: PropTypes.number,
     messagesRef: PropTypes.func,
     onInputChange: PropTypes.func,
-    onInputKeyDown: PropTypes.func,
     onSend: PropTypes.func,
     onResizeMouseDown: PropTypes.func
 };

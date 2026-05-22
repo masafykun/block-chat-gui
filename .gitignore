@@ -31,3 +31,4 @@ npm-*
 devserver.log
 install.log
 *.bak
+build.log

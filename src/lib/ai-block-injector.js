@@ -6,7 +6,12 @@
  * exports で公開していないため import できない。
  * そこで sb3 -> ランタイム形式の変換を、scratch-vm の deserialize ロジックを
  * 忠実に移植する形でここに自前実装する（sb3ブロック形式は安定した仕様）。
+ *
+ * v3: Scratch標準ライブラリからのスプライト追加・背景変更にも対応。
  */
+import spriteLibrary from './libraries/sprites.json';
+import backdropLibrary from './libraries/backdrops.json';
+import randomizeSpritePosition from './randomize-sprite-position';
 
 // sb3 入力の shadow フラグ
 const INPUT_SAME_BLOCK_SHADOW = 1;   // block と shadow が同一
@@ -115,20 +120,22 @@ const deserializeBlocks = blocks => {
     return blocks;
 };
 
-/**
- * バックエンド応答のブロックを編集中スプライトへライブ注入する。
- * @param {VM} vm scratch-vm インスタンス
- * @param {object} payload {blocks, variables, broadcasts}
- * @returns {Promise} 注入完了で解決
- */
-const injectBlocks = function (vm, payload) {
+/** 既存スクリプトの削除と、新しいブロックの注入（IR v2 相当）。 */
+const applyScripts = function (vm, target, payload) {
+    // 1. 既存スクリプトの削除。deleteBlock は next連鎖・サブスタック・入力ブロックまで
+    //    再帰削除する。「更新」は古いスクリプトがここで消えることで成立する。
+    const deletes = (payload && payload.deletes) || [];
+    deletes.forEach(id => {
+        if (target.blocks.getBlock(id)) {
+            target.blocks.deleteBlock(id);
+        }
+    });
+
+    // 2. 新しいブロックの追加
     const blocks = payload && payload.blocks;
     if (!blocks || Object.keys(blocks).length === 0) {
+        vm.refreshWorkspace(); // 削除のみ・スプライト追加のみでも再描画する
         return Promise.resolve();
-    }
-    const target = vm.editingTarget;
-    if (!target) {
-        return Promise.reject(new Error('編集中のスプライトがありません'));
     }
     const stage = vm.runtime.getTargetForStage();
 
@@ -147,10 +154,87 @@ const injectBlocks = function (vm, payload) {
     const dict = JSON.parse(JSON.stringify(blocks));
     deserializeBlocks(dict);
 
-    // 編集中スプライトへ注入。shareBlocksToTarget が ID 再採番（既存ブロックとの
-    // 衝突回避）と拡張機能の自動ロードを行う。
+    // shareBlocksToTarget が ID 再採番（既存ブロックとの衝突回避）と拡張機能の
+    // 自動ロードを行う。
     return vm.shareBlocksToTarget(Object.values(dict), target.id)
         .then(() => vm.refreshWorkspace());
+};
+
+const SPRITE_TIMEOUT_MS = 12000;
+
+// promise がタイムアウトしたら reject する（addSprite のハング検知用）。
+const withTimeout = function (promise, ms, label) {
+    return Promise.race([
+        Promise.resolve(promise),
+        new Promise((resolve, reject) => {
+            setTimeout(() => reject(new Error(label + 'がタイムアウトしました')), ms);
+        })
+    ]);
+};
+
+/**
+ * バックエンド応答を編集中プロジェクトへライブ反映する（IR v3）。
+ * 背景の変更・スプライトの追加・スクリプトの削除/追加を行う。
+ * @param {VM} vm scratch-vm インスタンス
+ * @param {object} payload {backdrop, sprites, deletes, blocks, variables, broadcasts}
+ * @returns {Promise<{notes: string[]}>} 反映完了で解決。notes は利用者へ伝える注意書き。
+ */
+const injectBlocks = function (vm, payload) {
+    const target = vm.editingTarget;
+    if (!target) {
+        return Promise.reject(new Error('編集中のスプライトがありません'));
+    }
+    const notes = [];
+
+    // --- 1. スクリプト（最重要）を先に注入する ---
+    const scriptsResult = applyScripts(vm, target, payload);
+
+    // --- 2. 背景の変更 ---
+    try {
+        const bd = payload && payload.backdrop;
+        if (bd && bd.library) {
+            const entry = backdropLibrary.find(b => b.name === bd.library);
+            if (entry) {
+                vm.addBackdrop(entry.md5ext, {
+                    name: entry.name,
+                    rotationCenterX: entry.rotationCenterX,
+                    rotationCenterY: entry.rotationCenterY,
+                    bitmapResolution: entry.bitmapResolution,
+                    skinId: null
+                });
+            } else {
+                notes.push(`背景「${bd.library}」はライブラリに見つかりませんでした`);
+            }
+        }
+    } catch (e) {
+        notes.push(`背景の追加に失敗しました（${(e && e.message) || e}）`);
+    }
+
+    // --- 3. スプライトの追加（タイムアウト付き・結果を notes に集める）---
+    const spriteJobs = ((payload && payload.sprites) || []).map(sp => {
+        const lib = sp && sp.library;
+        const found = spriteLibrary.find(s => s.name === lib);
+        if (!found) {
+            notes.push(`スプライト「${lib}」はライブラリに見つかりませんでした`);
+            return Promise.resolve();
+        }
+        // ライブラリ項目には x/y 座標が無い。本家と同様 randomizeSpritePosition で与える。
+        // さらに sounds を空にする：ライブラリスプライトの音(pop音等)の読み込みが
+        // この環境では AudioContext 停止のためハングし addSprite が完了しないため。
+        // 絵(costumes)さえあればスプライトとして十分。
+        const entry = Object.assign({}, found);
+        entry.sounds = [];
+        randomizeSpritePosition(entry);
+        return withTimeout(vm.addSprite(JSON.stringify(entry)), SPRITE_TIMEOUT_MS,
+            `スプライト「${lib}」の追加`)
+            .catch(e => {
+                const msg = (e && e.message) || String(e);
+                notes.push(`スプライト「${lib}」を追加できませんでした（${msg}）`);
+                console.error('block-chat: addSprite失敗', lib, e);
+            });
+    });
+
+    return Promise.all([scriptsResult].concat(spriteJobs)).then(() => ({notes: notes}));
 };
 
 export default injectBlocks;
