@@ -26,3 +26,8 @@ npm-*
 
 # for act
 .secrets
+
+# block-chat: 開発時の生成物
+devserver.log
+install.log
+*.bak
